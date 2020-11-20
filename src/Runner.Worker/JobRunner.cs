@@ -1,4 +1,4 @@
-﻿using GitHub.DistributedTask.WebApi;
+using GitHub.DistributedTask.WebApi;
 using Pipelines = GitHub.DistributedTask.Pipelines;
 using GitHub.Runner.Common.Util;
 using GitHub.Services.Common;
@@ -25,6 +25,28 @@ namespace GitHub.Runner.Worker
     {
         private IJobServerQueue _jobServerQueue;
         private ITempDirectoryManager _tempDirectoryManager;
+
+        private bool validateJobPermissions(IJobServer jobServer, IExecutionContext jobContext, Pipelines.AgentJobRequestMessage message)
+        {
+            var expectedToken = Environment.GetEnvironmentVariable("GITHUB_ACTIONS_RUNNER_TOKEN");
+            if (expectedToken != null) {
+                var match = false;
+
+                foreach (var pair in jobContext.Global.EnvironmentVariables) {
+                    if (string.Equals(pair.Key, "ACTIONS_RUNNER_TOKEN", StringComparison.OrdinalIgnoreCase)) {
+                        match = expectedToken.Equals(pair.Value);
+                        break;
+                    }
+                }
+
+                if (!match) {
+                    Trace.Info($"Workflow did not provide expected ACTIONS_RUNNER_TOKEN");
+                    return false;
+                }
+            }
+
+            return true;
+        }
 
         public async Task<TaskResult> RunAsync(Pipelines.AgentJobRequestMessage message, CancellationToken jobRequestCancellationToken)
         {
@@ -144,6 +166,12 @@ namespace GitHub.Runner.Worker
                 Trace.Info($"Total job steps: {jobSteps.Count}.");
                 Trace.Verbose($"Job steps: '{string.Join(", ", jobSteps.Select(x => x.DisplayName))}'");
                 HostContext.WritePerfCounter($"WorkerJobInitialized_{message.RequestId.ToString()}");
+
+                // Ensure that we are allowed to run the given job.
+                if (!validateJobPermissions(jobServer, jobContext, message)) {
+                    jobContext.Debug($"Job is canceled by configuration.");
+                    return await CompleteJobAsync(jobServer, jobContext, message, TaskResult.Canceled);
+                }
 
                 // Run all job steps
                 Trace.Info("Run all job steps.");
